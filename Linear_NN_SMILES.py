@@ -1,5 +1,17 @@
 #%%
-#This script is used to predict hyrophobicity scores using transformer-based NN
+#This script is used to predict hyrophobicity scores using a simple linear-regression NN
+#This is part of me testing different models to see which perform well using a smiles-based dataset
+'''
+The steps are simple:
+
+Step 1: get data in and format it 
+Step 2: tokenize the smiles files. Need to get numeric data for use
+Step 3: set the model
+Step 4: train and test
+
+
+
+'''
 
 ###Import packages ########################
 import os
@@ -38,6 +50,24 @@ def is_float(num_in):
     except ValueError:
         return False
 
+
+#function is meant to pad the tensor with 0 to make it usable. otherwise the different lengths will mess up the training
+def pad_tensor(array_in):
+    tensor_lengths = []   #initialize tensor
+
+    for j in range(len(array_in)):
+        tensor_lengths.append(len(array_in[j]))
+
+    largest_tensor_size = max(tensor_lengths)
+
+
+    for k in range(len(array_in)):
+
+        pad_length = largest_tensor_size - len(array_in[k])
+        
+        array_in[k] = nn.functional.pad(array_in[k], pad=(0,pad_length), mode='constant', value=0)
+    
+    return array_in
 ##########################    misc functions end   ###########################
 
 
@@ -47,20 +77,22 @@ def is_float(num_in):
 
 print("Reading ChEMB data")
 
-#hardcoded input. You can change it here for wherever the file is for you. 
+#hardcoded input. This script is purposely meant to be used specifically on this data set and not multipurpose.
+####However, if you want to use it for a different dataset, change input here. ###
 file_name="chem_data.csv"
 
 input_chem_data = pd.read_csv(file_name, usecols = ["Smiles", "AlogP"], header=0)
 
 
-#filter the data to remove any empty values or those that aren't numbers 
+#filter the data to remove any empty values or those that aren't numbers. Essentially parse the data to remove stuff that 
+#will mess up the script. 
 input_chem_data = input_chem_data[(input_chem_data["Smiles"] != "") & 
                                   (input_chem_data.Smiles.str.len() < 1000) & 
                                    (input_chem_data["AlogP"].notna()) &
                                    ((input_chem_data["AlogP"].apply(is_float) | (input_chem_data["AlogP"].str.isnumeric()))) 
                                   ]
 
-input_chem_data = input_chem_data.reset_index(drop=True)
+input_chem_data = input_chem_data.reset_index(drop=True) #fix index so it starts at 0 again instead of random numbers
 
 smiles = input_chem_data["Smiles"].astype("string") #convert to string
 
@@ -69,8 +101,9 @@ alogp = input_chem_data["AlogP"].astype(float) #convert column to float
 
 alogp = (alogp - np.min(alogp)) / (np.max(alogp) - np.min(alogp)) #normalize the values between 0 and 1 so they can be used 
 
-smiles = smiles.head(50000)
-alogp = alogp.head(50000)
+#this is meant to subset for training testing. The actual dataset is massive so a subset is good. 
+smiles = smiles.head(500)
+alogp = alogp.head(500)
 
 
 
@@ -79,27 +112,11 @@ tokenizer = SMILESAtomTokenizer(smiles=list(smiles))  #tokenize the smiles to nu
 smiles_array = tokenizer(smiles) #get the tokenized values
 
 
-
-tensor_lengths = []
-
-for j in range(len(smiles_array)):
-    tensor_lengths.append(len(smiles_array[j]))
-
-largest_tensor_size = max(tensor_lengths)
-
-
-for k in range(len(smiles_array)):
-
-    pad_length = largest_tensor_size - len(smiles_array[k])
-    
-    smiles_array[k] = nn.functional.pad(smiles_array[k], pad=(0,pad_length), mode='constant', value=0)
-    
-
-
-
+smiles_array = pad_tensor(smiles_array)
 
 smiles_tensor = torch.stack(smiles_array)
 
+#print(smiles_tensor)
 
 
 
@@ -115,9 +132,8 @@ alogp_tensor = torch.stack(alogp_tensor)
 custom_dataset = torch.utils.data.TensorDataset(smiles_tensor, alogp_tensor)
 
 input_dim = len(custom_dataset[0][0])
-#print(input_dim)
-#print(len(custom_dataset[0][0]))
-#exit()
+
+###set the model. Model has four linear layers and one dropout layer with ReLU layers in between 
 model = nn.Sequential(
     nn.Linear(input_dim,50),
     nn.ReLU(),
@@ -137,10 +153,11 @@ model = nn.Sequential(
 loss_fn = nn.MSELoss()
 optimizer = optim.Adam(model.parameters(), lr=0.001)
 
+###tune some hyperparamater stuff
 n_epochs=100
 batch_size=100
 
-#custom_dataset = torch.utils.data.TensorDataset(x, y)
+#split dataset into train and test sets, then create the dataloader
 train_len = int(len(custom_dataset)*0.8)
 train_set, test_set = tud.random_split(custom_dataset, [train_len, len(custom_dataset)-train_len])
 
@@ -148,11 +165,8 @@ train_set, test_set = tud.random_split(custom_dataset, [train_len, len(custom_da
 train_loader = DataLoader(train_set, batch_size=batch_size, shuffle=True)
 test_loader = DataLoader(test_set, batch_size=batch_size, shuffle=False)
 
-#train_loader_y = DataLoader(train_set_y, batch_size=batch_size, shuffle=True)
-#test_loader_y = DataLoader(test_set_y, batch_size=batch_size, shuffle=False)
 
-#print(train_loader_x, train_loader_y)
-
+###training model
 model.train()
 num_correct = 0
 num_samples = 0
@@ -160,32 +174,17 @@ total_loss = 0
 
 for epoch in range(n_epochs+1):
     for data,targets in train_loader:
-            #print("firstbatch", batch[0])
-            #print("second batch", batch[1])
-
-            #exit() 
-            #data,targets = batch[:, 0], batch[:, 1]
-        #data, targets = batch[0], batch[1]
-        
-        
-
+            
         data = data.to(device=device)
         data = torch.tensor(data).to(torch.float32)
-        #data = data.long()
-
-        #print(data.shape)
+        
 
         targets = targets.to(device=device)
         targets = torch.tensor(targets).to(torch.float32)
-        #targets = targets.long()
-
         
-        #print(data, targets)
             
 
         pred = model(data)
-
-        #pred = pred.permute(1, 2, 0)
         loss = loss_fn(pred, targets)
 
 
@@ -196,16 +195,16 @@ for epoch in range(n_epochs+1):
         total_loss += loss.detach().item()
 
         num_correct += (pred.round() == targets.round()).sum().item()
-    #print(num_correct)
-
-    
         num_samples += pred.size(0)
     
 
     acc = float(num_correct) / float(num_samples) * 100
     print(f'Finished epoch {epoch}, latest loss {loss}, accuracy {acc}')
-    
+###end training
 
+
+####testing####
+model.eval()
 num_correct = 0
 num_samples = 0
 total_loss = 0
@@ -227,7 +226,7 @@ for x_test, y_test in test_loader:
     #_, predictions = eval_score.max(1)
     
 
-    print(f'Predictions are: {predictions},\n Actual values are: {y_test}')
+   # print(f'Predictions are: {predictions},\n Actual values are: {y_test}')
     
 
     num_correct += (predictions.round() == y_test.round()).sum().item()
@@ -235,10 +234,9 @@ for x_test, y_test in test_loader:
 
     
     num_samples += predictions.size(0)
-    print(f'Num correct predictions = {num_correct}, num things = {num_samples}')
+    print(f'Num correct predictions = {num_correct}, num samples = {num_samples}')
+#end test
 
 acc = float(num_correct) / float(num_samples) * 100
-print(acc)
-
 print("Model accuracy: %.2f%%" % (acc))
 
